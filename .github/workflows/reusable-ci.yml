@@ -1,0 +1,96 @@
+name: Reusable CI
+
+on:
+  workflow_call:
+    inputs:
+      run_graphify:
+        description: "Run code-only Graphify and upload graph.json artifact"
+        type: boolean
+        default: false
+      node_version:
+        type: string
+        default: "22"
+      python_version:
+        type: string
+        default: "3.12"
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect stack
+        id: stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_node=false
+          has_py=false
+          if [[ -f package.json ]]; then has_node=true; fi
+          if [[ -f pyproject.toml || -f requirements.txt || -f setup.py ]]; then has_py=true; fi
+          echo "node=$has_node" >> "$GITHUB_OUTPUT"
+          echo "python=$has_py" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        if: steps.stack.outputs.node == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ hashFiles('pnpm-lock.yaml') != '' && 'pnpm' || hashFiles('yarn.lock') != '' && 'yarn' || hashFiles('package-lock.json') != '' && 'npm' || '' }}
+
+      - name: Install & test (Node)
+        if: steps.stack.outputs.node == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f pnpm-lock.yaml ]]; then
+            corepack enable
+            pnpm install --frozen-lockfile || pnpm install
+            pnpm test --if-present
+            pnpm run lint --if-present || true
+          elif [[ -f yarn.lock ]]; then
+            corepack enable
+            yarn install --frozen-lockfile || yarn install
+            yarn test --if-present || true
+          else
+            npm ci || npm install
+            npm test --if-present
+            npm run lint --if-present || true
+          fi
+
+      - name: Setup Python
+        if: steps.stack.outputs.python == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install & test (Python)
+        if: steps.stack.outputs.python == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip
+          if [[ -f requirements.txt ]]; then pip install -r requirements.txt; fi
+          if [[ -f pyproject.toml ]]; then pip install -e ".[dev]" || pip install -e . || true; fi
+          if command -v pytest >/dev/null; then pytest -q; else echo "pytest not installed; skip"; fi
+
+      - name: Graphify (code-only)
+        if: inputs.run_graphify
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip graphifyy
+          graphify . --code-only || graphify extract . --code-only || true
+          ls -la graphify-out || true
+
+      - name: Upload graphify artifact
+        if: inputs.run_graphify
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-out
+          path: graphify-out/
+          if-no-files-found: ignore
