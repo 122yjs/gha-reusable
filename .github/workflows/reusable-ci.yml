@@ -7,6 +7,10 @@ on:
         description: "Run code-only Graphify and upload graph.json artifact"
         type: boolean
         default: true
+      run_pr_conflicts:
+        description: "On pull_request, run graphify prs --conflicts (community overlap)"
+        type: boolean
+        default: true
       node_version:
         type: string
         default: "22"
@@ -17,6 +21,9 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,7 +68,7 @@ jobs:
           fi
 
       - name: Setup Python
-        if: steps.stack.outputs.python == 'true'
+        if: steps.stack.outputs.python == 'true' || inputs.run_graphify
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
@@ -77,13 +84,19 @@ jobs:
           if command -v pytest >/dev/null; then pytest -q; else echo "pytest not installed; skip"; fi
 
       - name: Graphify (code-only)
+        id: graphify
         if: inputs.run_graphify
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install -U pip graphifyy
-          graphify . --code-only || graphify extract . --code-only || true
+          graphify . --code-only || graphify extract . --code-only || graphify update . --no-cluster || true
+          if [[ -f graphify-out/graph.json ]]; then
+            echo "has_graph=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_graph=false" >> "$GITHUB_OUTPUT"
+          fi
           ls -la graphify-out || true
 
       - name: Upload graphify artifact
@@ -94,3 +107,54 @@ jobs:
           name: graphify-out
           path: graphify-out/
           if-no-files-found: ignore
+
+      - name: Graphify PR community conflicts
+        if: >-
+          inputs.run_graphify &&
+          inputs.run_pr_conflicts &&
+          github.event_name == 'pull_request' &&
+          steps.graphify.outputs.has_graph == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip graphifyy
+          base="${{ github.base_ref || 'main' }}"
+          out="$(mktemp)"
+          set +e
+          graphify prs --conflicts --base "$base" | tee "$out"
+          code=$?
+          set -e
+
+          {
+            echo "## Graphify PR community conflicts"
+            echo ""
+            echo "Base: \\`$base\\`"
+            echo ""
+            echo '```'
+            cat "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # PR 코멘트 (실패해도 검사는 계속)
+          if command -v gh >/dev/null; then
+            body_file="$(mktemp)"
+            {
+              echo "### Graphify community overlap (\`prs --conflicts\`)"
+              echo ""
+              echo "Checks whether open PRs touch the same graph communities (merge-order risk), not git line conflicts."
+              echo ""
+              echo '```'
+              cat "$out"
+              echo '```'
+            } > "$body_file"
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file "$body_file" || true
+          fi
+
+          if grep -q "Community conflicts (PRs sharing the same graph community)" "$out"; then
+            echo "::error::Open PRs share graph communities — review merge order before landing both."
+            exit 1
+          fi
+          exit "$code"
