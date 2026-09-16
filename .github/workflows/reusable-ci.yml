@@ -6,7 +6,7 @@ on:
       run_graphify:
         description: "Run code-only Graphify and upload graph.json artifact"
         type: boolean
-        default: false
+        default: true
       node_version:
         type: string
         default: "22"
