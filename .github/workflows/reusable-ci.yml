@@ -24,6 +24,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      checks: read
+      statuses: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -131,8 +133,7 @@ jobs:
           {
             echo "## Graphify PR community conflicts"
             echo ""
-            echo "Base: \\`$base\\`"
-            echo ""
+            printf 'Base: `%s`\n\n' "$base"
             echo '```'
             cat "$out"
             echo '```'
