@@ -122,11 +122,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install -U pip graphifyy
           base="${{ github.base_ref || 'main' }}"
+
+          # A community-overlap comparison needs at least two open PRs targeting
+          # the same base. Avoid Graphify's statusCheckRollup query when there is
+          # nothing to compare; this also keeps single-PR CI compatible with the
+          # repository-scoped GitHub Actions token.
+          open_pr_count="$(gh api "repos/${GH_REPO}/pulls?state=open&base=${base}&per_page=2" --jq 'length')"
+          if [ "$open_pr_count" -le 1 ]; then
+            {
+              echo "## Graphify PR community conflicts"
+              echo ""
+              printf 'Base: `%s`\n\n' "$base"
+              echo "No other open PR targets this base; no community overlap is possible."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          python -m pip install -U pip graphifyy
           out="$(mktemp)"
           set +e
-          graphify prs --conflicts --base "$base" | tee "$out"
+          graphify prs --conflicts --base "$base" --repo "$GH_REPO" | tee "$out"
           code=$?
           set -e
 
